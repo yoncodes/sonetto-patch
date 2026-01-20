@@ -6,9 +6,9 @@ use crate::util::{import, read_csharp_string};
 use anyhow::Result;
 use ilhook::x64::Registers;
 
-const WEB_REQUEST_UTILS_MAKE_INITIAL_URL: usize = 0x1e3d870;
-const BROWSER_LOAD_URL: usize = 0x13d9cc0;
-const SET_REQUEST_HEADER: usize = 0x1e39010;
+const WEB_REQUEST_UTILS_MAKE_INITIAL_URL: usize = 0x24d1510;
+const BROWSER_LOAD_URL: usize = 0x24fddd0;
+const SET_REQUEST_HEADER: usize = 0x24cc4d0;
 
 static HOST_CSTRING: LazyLock<CString> = LazyLock::new(|| CString::new("127.0.0.1").unwrap());
 
@@ -41,7 +41,7 @@ impl MhyModule for MhyContext<Network> {
     }
 }
 
-import!(il2cpp_string_new(cstr: *const u8) -> usize = 0x1FD520);
+import!(il2cpp_string_new(cstr: *const u8) -> usize = 0x2EAD30);
 
 unsafe extern "win64" fn on_make_initial_url(reg: *mut Registers, _: usize) {
     let url = read_csharp_string((*reg).rcx as usize);

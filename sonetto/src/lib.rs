@@ -16,7 +16,6 @@ use crate::modules::{MhyContext, ModuleManager, Network, Socket};
 
 #[allow(clippy::manual_c_str_literals)]
 unsafe fn thread_func() {
-    // Wait until GameAssembly.dll is loaded
     while GetModuleHandleA(PCSTR(b"GameAssembly.dll\0".as_ptr())).is_err() {
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -28,7 +27,7 @@ unsafe fn thread_func() {
     util::disable_memory_protection();
     //Console::AllocConsole().unwrap();
 
-    println!("Reverse 1999 patch\nMade by yoncodes\nTo work with sonetto-server:");
+    println!("Reverse 1999 patch\nMade by yoncodes\nTo work with sonetto-rs:");
     println!("Base: {:X}", base);
 
     let mut module_manager = MODULE_MANAGER.write().unwrap();
