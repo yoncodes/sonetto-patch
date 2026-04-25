@@ -45,7 +45,8 @@ unsafe extern "win64" fn on_connect(reg: *mut Registers, _: usize) {
     let key = format!("{ip}:{port}");
     println!("[connect] IP: {ip}, Port: {port}");
 
-    if ip == Ipv4Addr::new(43, 175, 234, 39) && port == 12004 {
+    //(43, 175, 234, 39) //port == 12004
+    if ip == Ipv4Addr::new(43, 163, 62, 120) && port == 443 {
         println!("Overriding {ip}:{port} → 127.0.0.1:12004");
         sockaddr.sin_addr.S_un.S_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
         sockaddr.sin_port = 12004u16.to_be();
