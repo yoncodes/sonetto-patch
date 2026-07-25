@@ -8,34 +8,22 @@ use windows::{
     },
 };
 
-#[macro_export]
-macro_rules! c {
-    ($cstr:expr) => {
-        unsafe {
-            std::ffi::CStr::from_ptr(concat!($cstr, "\0").as_ptr() as *const std::os::raw::c_char)
-                .to_bytes_with_nul()
-                .as_ptr()
-        }
-    };
-}
-
-macro_rules! import {
-    ($name:ident($($arg_name:ident: $arg_type:ty),*) -> $ret_type:ty = $rva:expr) => {
-        pub unsafe fn $name($($arg_name: $arg_type,)*) -> $ret_type {
-            static PROC: ::std::sync::LazyLock<usize> =
-                ::std::sync::LazyLock::new(|| *crate::util::GAME_ASSEMBLY_BASE + $rva);
-
-            type FuncType = unsafe extern "system" fn($($arg_type,)*) -> $ret_type;
-            let func: FuncType = ::std::mem::transmute(*PROC);
-            func($($arg_name,)*)
-        }
-    };
-}
-
-pub(crate) use import;
-
 pub static GAME_ASSEMBLY_BASE: LazyLock<usize> =
     LazyLock::new(|| unsafe { GetModuleHandleA(s!("GameAssembly.dll")).unwrap().0 as usize });
+
+pub unsafe fn il2cpp_string_new(cstr: *const u8) -> usize {
+    type Function = unsafe extern "system" fn(*const u8) -> usize;
+
+    static FUNCTION: LazyLock<Option<Function>> = LazyLock::new(|| {
+        let module = unsafe { GetModuleHandleA(s!("GameAssembly.dll")) }.ok()?;
+        let function = unsafe { GetProcAddress(module, s!("il2cpp_string_new")) }?;
+        Some(unsafe {
+            std::mem::transmute::<unsafe extern "system" fn() -> isize, Function>(function)
+        })
+    });
+
+    FUNCTION.map_or(0, |function| function(cstr))
+}
 
 #[inline]
 pub unsafe fn read_csharp_string(s: usize) -> String {

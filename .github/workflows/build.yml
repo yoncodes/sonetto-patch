@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-12-06
+
+      - run: cargo build --locked --release --workspace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonetto-patch
+          path: |
+            target/release/launcher.exe
+            target/release/sonetto.dll
+          if-no-files-found: error
+
+      - name: Select next tag
+        id: version
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $latest = git tag --list 'v*' |
+            Where-Object { $_ -match '^v\d+\.\d+$' } |
+            Sort-Object { [version]$_.Substring(1) } -Descending |
+            Select-Object -First 1
+
+          if ($latest) {
+            $version = [version]$latest.Substring(1)
+            $next = "v$($version.Major).$($version.Minor + 1)"
+          } else {
+            $next = "v1.0"
+          }
+
+          "tag=$next" >> $env:GITHUB_OUTPUT
+
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push'
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            target/release/launcher.exe
+            target/release/sonetto.dll
+          generate_release_notes: true

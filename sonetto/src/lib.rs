@@ -25,9 +25,9 @@ unsafe fn thread_func() {
     //std::thread::sleep(Duration::from_secs(1));
 
     util::disable_memory_protection();
-    //Console::AllocConsole().unwrap();
+    //let _ = Console::AllocConsole();
 
-    println!("Reverse 1999 patch\nMade by yoncodes\nTo work with sonetto-rs:");
+    println!("Reverse 1999 patch\nMade by yoncodes\nTo work with enigma:");
     println!("Base: {:X}", base);
 
     let mut module_manager = MODULE_MANAGER.write().unwrap();

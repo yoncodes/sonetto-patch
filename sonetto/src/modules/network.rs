@@ -2,13 +2,13 @@ use std::ffi::CString;
 use std::sync::LazyLock;
 
 use super::{MhyContext, MhyModule, ModuleType};
-use crate::util::{import, read_csharp_string};
+use crate::util::{il2cpp_string_new, read_csharp_string};
 use anyhow::Result;
 use ilhook::x64::Registers;
 
-const WEB_REQUEST_UTILS_MAKE_INITIAL_URL: usize = 0x3e4d8a0;
-const BROWSER_LOAD_URL: usize = 0x3e79830;
-const SET_REQUEST_HEADER: usize = 0x3e48860;
+const WEB_REQUEST_UTILS_MAKE_INITIAL_URL: usize = 0x3E7D6A0;
+const BROWSER_LOAD_URL: usize = 0x3EA9630;
+const SET_REQUEST_HEADER: usize = 0x3E78660;
 
 static HOST_CSTRING: LazyLock<CString> = LazyLock::new(|| CString::new("127.0.0.1").unwrap());
 
@@ -41,8 +41,6 @@ impl MhyModule for MhyContext<Network> {
     }
 }
 
-import!(il2cpp_string_new(cstr: *const u8) -> usize = 0x5277B0);
-
 unsafe extern "win64" fn on_make_initial_url(reg: *mut Registers, _: usize) {
     let url = read_csharp_string((*reg).rcx as usize);
 
@@ -63,7 +61,7 @@ unsafe extern "win64" fn on_make_initial_url(reg: *mut Registers, _: usize) {
         let cstr = CString::new(new_url.as_str()).unwrap();
         let new_ptr = il2cpp_string_new(cstr.as_ptr() as *const u8);
         if new_ptr == 0 {
-            println!("[ERROR] il2cpp_string_new returned null — RVA 0x2EAD30 may be stale");
+            println!("[ERROR] il2cpp_string_new export was unavailable");
             return;
         }
         (*reg).rcx = new_ptr as u64;
