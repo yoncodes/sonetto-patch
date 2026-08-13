@@ -1,34 +1,65 @@
-use std::ffi::CString;
-use std::sync::LazyLock;
+use std::{
+    ffi::{c_void, CStr, CString},
+    sync::OnceLock,
+};
 
-use super::{MhyContext, MhyModule, ModuleType};
-use crate::util::{il2cpp_string_new, read_csharp_string};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ilhook::x64::Registers;
 
-const WEB_REQUEST_UTILS_MAKE_INITIAL_URL: usize = 0x3E7D6A0;
-const BROWSER_LOAD_URL: usize = 0x3EA9630;
-const SET_REQUEST_HEADER: usize = 0x3E78660;
+use super::{MhyContext, MhyModule, ModuleType};
 
-static HOST_CSTRING: LazyLock<CString> = LazyLock::new(|| CString::new("127.0.0.1").unwrap());
+static TLS_HOST_ANSI: OnceLock<CString> = OnceLock::new();
+static TLS_HOST_WIDE: OnceLock<Vec<u16>> = OnceLock::new();
 
+#[repr(C)]
+struct CertChainPolicyPara {
+    cb_size: u32,
+    flags: u32,
+    extra_policy_para: *mut c_void,
+}
+
+#[repr(C)]
+struct HttpsPolicyCallbackData {
+    cb_size: u32,
+    auth_type: u32,
+    checks: u32,
+    server_name: *mut u16,
+}
 pub struct Network;
 
 impl MhyModule for MhyContext<Network> {
     unsafe fn init(&mut self) -> Result<()> {
-        self.interceptor.attach(
-            self.assembly_base + WEB_REQUEST_UTILS_MAKE_INITIAL_URL,
-            on_make_initial_url,
-        )?;
+        let config = crate::config::get().map_err(anyhow::Error::msg)?;
+        TLS_HOST_ANSI
+            .set(CString::new(config.tls.host.as_str())?)
+            .map_err(|_| anyhow!("TLS host was already initialized"))?;
+        TLS_HOST_WIDE
+            .set(
+                config
+                    .tls
+                    .host
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect(),
+            )
+            .map_err(|_| anyhow!("TLS host was already initialized"))?;
 
+        let winhttp_connect = self.get_export("winhttp.dll", "WinHttpConnect")?;
         self.interceptor
-            .attach(self.assembly_base + BROWSER_LOAD_URL, on_browser_load_url)?;
+            .attach(winhttp_connect, on_winhttp_connect)?;
 
-        self.interceptor.attach(
-            self.assembly_base + SET_REQUEST_HEADER,
-            on_set_request_header,
-        )?;
+        attach_optional(self, "Ws2_32.dll", "getaddrinfo", on_getaddrinfo);
+        attach_optional(self, "Ws2_32.dll", "gethostbyname", on_getaddrinfo);
+        attach_optional(
+            self,
+            "Crypt32.dll",
+            "CertVerifyCertificateChainPolicy",
+            on_verify_certificate_chain_policy,
+        );
 
+        crate::diagnostics::event(
+            "network hooks attached at WinHTTP with DNS and certificate compatibility fallbacks",
+        );
         Ok(())
     }
 
@@ -41,82 +72,132 @@ impl MhyModule for MhyContext<Network> {
     }
 }
 
-unsafe extern "win64" fn on_make_initial_url(reg: *mut Registers, _: usize) {
-    let url = read_csharp_string((*reg).rcx as usize);
-
-    if !url.contains("sl916.com") {
-        println!("Leaving {url} as is!");
-        return;
-    }
-
-    let mut new_url = String::from("http://127.0.0.1:21000");
-    url.split('/').skip(3).for_each(|s| {
-        new_url.push('/');
-        new_url.push_str(s);
-    });
-
-    if !url.contains("C:/") {
-        println!("Redirect: {url} -> {new_url}");
-
-        let cstr = CString::new(new_url.as_str()).unwrap();
-        let new_ptr = il2cpp_string_new(cstr.as_ptr() as *const u8);
-        if new_ptr == 0 {
-            println!("[ERROR] il2cpp_string_new export was unavailable");
-            return;
-        }
-        (*reg).rcx = new_ptr as u64;
+unsafe fn attach_optional(
+    context: &mut MhyContext<Network>,
+    module: &str,
+    symbol: &str,
+    callback: ilhook::x64::JmpBackRoutine,
+) {
+    let result = context
+        .get_export(module, symbol)
+        .and_then(|address| context.interceptor.attach(address, callback));
+    if let Err(error) = result {
+        crate::diagnostics::event(&format!(
+            "optional network hook unavailable: {module}!{symbol}: {error:#}"
+        ));
     }
 }
 
-unsafe extern "win64" fn on_browser_load_url(reg: *mut Registers, _: usize) {
-    let url_ptr = (*reg).rdx as usize;
-    if url_ptr == 0 {
+unsafe extern "win64" fn on_winhttp_connect(reg: *mut Registers, _: usize) {
+    let host_ptr = (*reg).rdx as *const u16;
+    if host_ptr.is_null() {
         return;
     }
 
-    let url = read_csharp_string(url_ptr);
-
-    // Skip about:blank or anything you want to exclude
-    if url == "about:blank" {
+    let Some(host) = read_wide_string(host_ptr, 512) else {
+        return;
+    };
+    if !is_official_sdk_host(&host) {
         return;
     }
 
-    if url.contains("game.local") {
+    let Ok(config) = crate::config::get() else {
         return;
-    }
+    };
+    let Some(target) = TLS_HOST_WIDE.get() else {
+        return;
+    };
 
-    // Rewrite to local server
-    let mut new_url = String::from("https://127.0.0.1:21000");
-    url.split('/').skip(3).for_each(|s| {
-        new_url.push('/');
-        new_url.push_str(s);
-    });
-
-    println!("Browser::LoadURL: {url} → {new_url}");
-
-    // Actually patch the pointer passed into the method
-    /*  let cstr = CString::new(new_url).unwrap();
-    let new_ptr = il2cpp_string_new(cstr.as_ptr() as *const u8);
-    (*reg).rdx = new_ptr as u64;*/
+    let original_port = (*reg).r8 as u16;
+    (*reg).rdx = target.as_ptr() as u64;
+    (*reg).r8 = u64::from(config.tls.port);
+    crate::diagnostics::event(&format!(
+        "sdk WinHTTP redirect {host}:{} -> {}:{}",
+        original_port, config.tls.host, config.tls.port
+    ));
 }
 
-unsafe extern "win64" fn on_set_request_header(reg: *mut Registers, _: usize) {
-    if (*reg).rdx == 0 || (*reg).r8 == 0 {
-        return;
-    }
-    let key = read_csharp_string((*reg).rdx as usize);
-    let value = read_csharp_string((*reg).r8 as usize);
-
-    if key.is_empty() || value.is_empty() {
+unsafe extern "win64" fn on_getaddrinfo(reg: *mut Registers, _: usize) {
+    let node_ptr = (*reg).rcx as *const i8;
+    if node_ptr.is_null() {
         return;
     }
 
-    if key.eq_ignore_ascii_case("host") {
-        println!("[SetRequestHeader] Rewriting Host: {value} → 127.0.0.1");
+    let Ok(host) = CStr::from_ptr(node_ptr).to_str() else {
+        return;
+    };
+    if !is_official_sdk_host(host) {
+        return;
+    }
 
-        let new_ptr = il2cpp_string_new(HOST_CSTRING.as_ptr() as *const u8);
-        (*reg).r8 = new_ptr as u64;
-    } else {
-        println!("[SetRequestHeader] {key}: {value}");
+    let Some(target) = TLS_HOST_ANSI.get() else {
+        return;
+    };
+    crate::diagnostics::event(&format!(
+        "sdk dns rewrite {host} -> {}",
+        target.to_string_lossy()
+    ));
+    (*reg).rcx = target.as_ptr() as u64;
+}
+
+unsafe extern "win64" fn on_verify_certificate_chain_policy(reg: *mut Registers, _: usize) {
+    const CERT_CHAIN_POLICY_SSL: usize = 4;
+    const AUTHTYPE_SERVER: u32 = 2;
+
+    if (*reg).rcx as usize != CERT_CHAIN_POLICY_SSL {
+        return;
+    }
+
+    let policy = (*reg).r8 as *mut CertChainPolicyPara;
+    if policy.is_null() || (*policy).extra_policy_para.is_null() {
+        return;
+    }
+
+    let https = (*policy).extra_policy_para as *mut HttpsPolicyCallbackData;
+    if https.is_null() || (*https).auth_type != AUTHTYPE_SERVER || (*https).server_name.is_null() {
+        return;
+    }
+
+    let Some(original) = read_wide_string((*https).server_name, 512) else {
+        return;
+    };
+    if !is_official_sdk_host(&original) {
+        return;
+    }
+
+    let Some(target) = TLS_HOST_WIDE.get() else {
+        return;
+    };
+    (*https).server_name = target.as_ptr() as *mut u16;
+    crate::diagnostics::event(&format!(
+        "sdk certificate host rewrite {original} -> {}",
+        String::from_utf16_lossy(&target[..target.len().saturating_sub(1)])
+    ));
+}
+
+fn is_official_sdk_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "sl916.com" || host.ends_with(".sl916.com") || host == "game.local"
+}
+
+unsafe fn read_wide_string(ptr: *const u16, max_units: usize) -> Option<String> {
+    let mut length = 0;
+    while length < max_units && *ptr.add(length) != 0 {
+        length += 1;
+    }
+    (length < max_units).then(|| String::from_utf16_lossy(std::slice::from_raw_parts(ptr, length)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_official_sdk_host;
+
+    #[test]
+    fn official_sdk_hosts_are_matched_by_exact_suffix() {
+        assert!(is_official_sdk_host("gamesdk-en.sl916.com"));
+        assert!(is_official_sdk_host("SL916.COM."));
+        assert!(is_official_sdk_host("game.local"));
+        assert!(!is_official_sdk_host("evilsl916.com"));
+        assert!(!is_official_sdk_host("sl916.com.example.org"));
     }
 }

@@ -11,31 +11,6 @@ use windows::{
 pub static GAME_ASSEMBLY_BASE: LazyLock<usize> =
     LazyLock::new(|| unsafe { GetModuleHandleA(s!("GameAssembly.dll")).unwrap().0 as usize });
 
-pub unsafe fn il2cpp_string_new(cstr: *const u8) -> usize {
-    type Function = unsafe extern "system" fn(*const u8) -> usize;
-
-    static FUNCTION: LazyLock<Option<Function>> = LazyLock::new(|| {
-        let module = unsafe { GetModuleHandleA(s!("GameAssembly.dll")) }.ok()?;
-        let function = unsafe { GetProcAddress(module, s!("il2cpp_string_new")) }?;
-        Some(unsafe {
-            std::mem::transmute::<unsafe extern "system" fn() -> isize, Function>(function)
-        })
-    });
-
-    FUNCTION.map_or(0, |function| function(cstr))
-}
-
-#[inline]
-pub unsafe fn read_csharp_string(s: usize) -> String {
-    let str_length = *(s.wrapping_add(16) as *const u32);
-    let str_ptr = s.wrapping_add(20) as *const u8;
-
-    String::from_utf16le_lossy(std::slice::from_raw_parts(
-        str_ptr,
-        (str_length * 2) as usize,
-    ))
-}
-
 pub unsafe fn disable_memory_protection() {
     let ntdll = GetModuleHandleA(s!("ntdll.dll")).unwrap();
     let proc_addr = GetProcAddress(ntdll, s!("NtProtectVirtualMemory")).unwrap();

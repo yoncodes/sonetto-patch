@@ -1,0 +1,14 @@
+# Copy this file to sonetto.toml next to launcher.exe.
+# 将本文件复制为 launcher.exe 同目录下的 sonetto.toml。
+
+[tls]
+host = "reverse1999.example"
+port = 21443
+# Optional IPv4 fallback used to redirect direct TLS connections.
+# 可选：用于重定向直接 TLS 连接的 IPv4 后备地址。
+ipv4 = "192.0.2.10"
+
+[game]
+host = "reverse1999.example"
+port = 22000
+ipv4 = "192.0.2.10"
