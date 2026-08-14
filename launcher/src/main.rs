@@ -2,19 +2,25 @@ use std::ffi::CString;
 
 use std::ptr::null_mut;
 use windows::core::{s, PCSTR, PSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 use windows::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 use windows::Win32::System::Threading::{
-    CreateProcessA, CreateRemoteThread, ResumeThread, WaitForSingleObject, CREATE_SUSPENDED,
-    PROCESS_INFORMATION, STARTUPINFOA,
+    CreateEventA, CreateProcessA, CreateRemoteThread, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOA,
 };
 
 const GAME_EXECUTABLE: PCSTR = s!("reverse1999.exe");
 const INJECT_DLL: &str = "sonetto.dll";
+const HOOK_READY_TIMEOUT_MS: u32 = 15_000;
+
+fn ready_event_name(process_id: u32) -> CString {
+    CString::new(format!("Local\\SonettoNetworkReady-{process_id}"))
+        .expect("readiness event name cannot contain NUL")
+}
 
 #[allow(clippy::missing_transmute_annotations)]
 fn inject_standard(h_target: HANDLE, dll_path: &str) -> bool {
@@ -94,10 +100,26 @@ fn main() {
         )
         .unwrap();
 
+        let event_name = ready_event_name(proc_info.dwProcessId);
+        let ready_event =
+            CreateEventA(None, true, false, PCSTR(event_name.as_ptr() as *const u8)).unwrap();
+
         if inject_standard(proc_info.hProcess, dll_path.to_str().unwrap()) {
-            ResumeThread(proc_info.hThread);
+            let wait_result = WaitForSingleObject(ready_event, HOOK_READY_TIMEOUT_MS);
+            if wait_result == WAIT_OBJECT_0 {
+                ResumeThread(proc_info.hThread);
+            } else {
+                println!(
+                    "Network hooks did not become ready within {} seconds; game launch aborted.",
+                    HOOK_READY_TIMEOUT_MS / 1000
+                );
+                let _ = TerminateProcess(proc_info.hProcess, 1);
+            }
+        } else {
+            let _ = TerminateProcess(proc_info.hProcess, 1);
         }
 
+        CloseHandle(ready_event).unwrap();
         CloseHandle(proc_info.hThread).unwrap();
         CloseHandle(proc_info.hProcess).unwrap();
     }

@@ -1,40 +1,71 @@
-#![feature(str_from_utf16_endian)]
-
-use std::{sync::RwLock, time::Duration};
+use std::{ffi::CString, sync::RwLock};
 
 use lazy_static::lazy_static;
 use windows::core::PCSTR;
 //use windows::Win32::System::Console;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleHandleA};
+use windows::Win32::{
+    Foundation::{CloseHandle, HINSTANCE},
+    System::{
+        LibraryLoader::LoadLibraryA,
+        Threading::{CreateEventA, GetCurrentProcessId, SetEvent},
+    },
+};
 
+mod config;
+mod diagnostics;
 mod interceptor;
 mod modules;
-mod util;
-
 use crate::modules::{MhyContext, ModuleManager, Network, Socket};
 
 #[allow(clippy::manual_c_str_literals)]
 unsafe fn thread_func() {
-    while GetModuleHandleA(PCSTR(b"GameAssembly.dll\0".as_ptr())).is_err() {
-        std::thread::sleep(Duration::from_millis(200));
+    diagnostics::event("dll attached; loading network hook dependencies");
+    for (name, bytes) in [
+        ("Ws2_32.dll", b"Ws2_32.dll\0".as_slice()),
+        ("WinHttp.dll", b"WinHttp.dll\0".as_slice()),
+        ("Crypt32.dll", b"Crypt32.dll\0".as_slice()),
+    ] {
+        if let Err(error) = LoadLibraryA(PCSTR(bytes.as_ptr())) {
+            diagnostics::event(&format!("network dependency load failed: {name}: {error}"));
+            return;
+        }
     }
-
-    let base = *util::GAME_ASSEMBLY_BASE;
-
-    //std::thread::sleep(Duration::from_secs(1));
-
-    util::disable_memory_protection();
-    //let _ = Console::AllocConsole();
-
-    println!("Reverse 1999 patch\nMade by yoncodes\nTo work with enigma:");
-    println!("Base: {:X}", base);
+    diagnostics::event("network hook dependencies loaded before GameAssembly.dll");
 
     let mut module_manager = MODULE_MANAGER.write().unwrap();
 
-    module_manager.enable(MhyContext::<Network>::new(base));
-    module_manager.enable(MhyContext::<Socket>::new(base));
-    println!("Successfully initialized!");
+    if let Err(error) = module_manager.enable(MhyContext::<Socket>::new()) {
+        diagnostics::event(&format!("socket initialization failed: {error:#}"));
+        return;
+    }
+    if let Err(error) = module_manager.enable(MhyContext::<Network>::new()) {
+        diagnostics::event(&format!("network initialization failed: {error:#}"));
+        return;
+    }
+    diagnostics::event("all network hooks initialized before GameAssembly.dll");
+    signal_launcher_ready();
+}
+
+unsafe fn signal_launcher_ready() {
+    let event_name = CString::new(format!(
+        "Local\\SonettoNetworkReady-{}",
+        GetCurrentProcessId()
+    ))
+    .expect("readiness event name cannot contain NUL");
+    match CreateEventA(None, true, false, PCSTR(event_name.as_ptr() as *const u8)) {
+        Ok(event) => {
+            if let Err(error) = SetEvent(event) {
+                diagnostics::event(&format!("launcher readiness signal failed: {error}"));
+            } else {
+                diagnostics::event("launcher readiness signaled");
+            }
+            let _ = CloseHandle(event);
+        }
+        Err(error) => diagnostics::event(&format!(
+            "launcher readiness event creation failed: {error}"
+        )),
+    }
 }
 
 lazy_static! {
