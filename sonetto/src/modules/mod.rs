@@ -12,7 +12,6 @@ use windows::{
     },
 };
 
-
 mod network;
 mod socket;
 
@@ -27,11 +26,12 @@ unsafe impl Sync for ModuleManager {}
 unsafe impl Send for ModuleManager {}
 
 impl ModuleManager {
-    pub unsafe fn enable(&mut self, module: impl MhyModule + 'static) {
+    pub unsafe fn enable(&mut self, module: impl MhyModule + 'static) -> Result<()> {
         let mut boxed_module = Box::new(module);
-        boxed_module.init().unwrap();
+        boxed_module.init()?;
         self.modules
             .insert(boxed_module.get_module_type(), boxed_module);
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -56,15 +56,13 @@ pub trait MhyModule {
 }
 
 pub struct MhyContext<T> {
-    pub assembly_base: usize,
     pub interceptor: Interceptor,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> MhyContext<T> {
-    pub const fn new(assembly_base: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
-            assembly_base,
             interceptor: Interceptor::new(),
             _phantom: std::marker::PhantomData,
         }
